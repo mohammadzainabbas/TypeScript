@@ -2743,9 +2743,12 @@ namespace ts {
 
         function parseSignatureMember(kind: SyntaxKind.CallSignature | SyntaxKind.ConstructSignature): CallSignatureDeclaration | ConstructSignatureDeclaration {
             const node = <CallSignatureDeclaration | ConstructSignatureDeclaration>createNodeWithJSDoc(kind);
+            let modifiers: NodeArray<Modifier> | undefined;
             if (kind === SyntaxKind.ConstructSignature) {
+                modifiers = parseModifiersForConstructSignature();
                 parseExpected(SyntaxKind.NewKeyword);
             }
+            node.modifiers = modifiers;
             fillSignature(SyntaxKind.ColonToken, SignatureFlags.Type, node);
             parseTypeMemberSemicolon();
             return finishNode(node);
@@ -2878,7 +2881,8 @@ namespace ts {
             if (token() === SyntaxKind.OpenParenToken || token() === SyntaxKind.LessThanToken) {
                 return parseSignatureMember(SyntaxKind.CallSignature);
             }
-            if (token() === SyntaxKind.NewKeyword && lookAhead(nextTokenIsOpenParenOrLessThan)) {
+            if (token() === SyntaxKind.AbstractKeyword && lookAhead(nextTokenIsNewKeyword) ||
+                token() === SyntaxKind.NewKeyword && lookAhead(nextTokenIsOpenParenOrLessThan)) {
                 return parseSignatureMember(SyntaxKind.ConstructSignature);
             }
             const node = <TypeElement>createNodeWithJSDoc(SyntaxKind.Unknown);
@@ -2998,10 +3002,24 @@ namespace ts {
             return finishNode(node);
         }
 
+        function parseModifiersForConstructSignature(): NodeArray<Modifier> | undefined {
+            let modifiers: NodeArray<Modifier> | undefined;
+            if (token() === SyntaxKind.AbstractKeyword) {
+                const modifierStart = scanner.getStartPos();
+                const modifierKind = token();
+                nextToken();
+                const modifier = finishNode(<Modifier>createNode(modifierKind, modifierStart));
+                modifiers = createNodeArray<Modifier>([modifier], modifierStart);
+            }
+            return modifiers;
+        }
+
         function parseFunctionOrConstructorType(): TypeNode {
             const pos = getNodePos();
+            const modifiers = parseModifiersForConstructSignature();
             const kind = parseOptional(SyntaxKind.NewKeyword) ? SyntaxKind.ConstructorType : SyntaxKind.FunctionType;
             const node = <FunctionOrConstructorTypeNode>createNodeWithJSDoc(kind, pos);
+            node.modifiers = modifiers;
             fillSignature(SyntaxKind.EqualsGreaterThanToken, SignatureFlags.Type, node);
             return finishNode(node);
         }
@@ -3286,6 +3304,16 @@ namespace ts {
             return token() === SyntaxKind.OpenParenToken && lookAhead(isUnambiguouslyStartOfFunctionType);
         }
 
+        function nextTokenIsNewKeyword(): boolean {
+            nextToken();
+            return token() === SyntaxKind.NewKeyword;
+        }
+
+        function isStartOfConstructorType(): boolean {
+            return token() === SyntaxKind.NewKeyword ||
+                token() === SyntaxKind.AbstractKeyword && lookAhead(nextTokenIsNewKeyword);
+        }
+
         function skipParameterStart(): boolean {
             if (isModifierKind(token())) {
                 // Skip modifiers
@@ -3371,7 +3399,7 @@ namespace ts {
         }
 
         function parseTypeWorker(noConditionalTypes?: boolean): TypeNode {
-            if (isStartOfFunctionType() || token() === SyntaxKind.NewKeyword) {
+            if (isStartOfFunctionType() || isStartOfConstructorType()) {
                 return parseFunctionOrConstructorType();
             }
             const type = parseUnionTypeOrHigher();

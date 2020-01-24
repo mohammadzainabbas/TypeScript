@@ -4590,8 +4590,12 @@ namespace ts {
                         returnTypeNode = createKeywordTypeNode(SyntaxKind.AnyKeyword);
                     }
                 }
+                let modifiers: Modifier[] | undefined;
+                if ((kind === SyntaxKind.ConstructorType || kind === SyntaxKind.ConstructSignature) && signature.flags & SignatureFlags.Abstract) {
+                    modifiers = createModifiersFromModifierFlags(ModifierFlags.Abstract);
+                }
                 context.approximateLength += 3; // Usually a signature contributes a few more characters than this, but 3 is the minimum
-                return createSignatureDeclaration(kind, typeParameters, parameters, returnTypeNode, typeArguments);
+                return createSignatureDeclaration(kind, modifiers, typeParameters, parameters, returnTypeNode, typeArguments);
             }
 
             function typeParameterToDeclarationWithConstraint(type: TypeParameter, context: NodeBuilderContext, constraintNode: TypeNode | undefined): TypeParameterDeclaration {
@@ -8994,8 +8998,10 @@ namespace ts {
         function getDefaultConstructSignatures(classType: InterfaceType): Signature[] {
             const baseConstructorType = getBaseConstructorTypeOfClass(classType);
             const baseSignatures = getSignaturesOfType(baseConstructorType, SignatureKind.Construct);
+            const declaration = getClassLikeDeclarationOfSymbol(classType.symbol);
+            const isAbstract = !!declaration && hasModifier(declaration, ModifierFlags.Abstract);
             if (baseSignatures.length === 0) {
-                return [createSignature(undefined, classType.localTypeParameters, undefined, emptyArray, classType, /*resolvedTypePredicate*/ undefined, 0, SignatureFlags.None)];
+                return [createSignature(undefined, classType.localTypeParameters, undefined, emptyArray, classType, /*resolvedTypePredicate*/ undefined, 0, isAbstract ? SignatureFlags.Abstract : SignatureFlags.None)];
             }
             const baseTypeNode = getBaseTypeNodeOfClass(classType)!;
             const isJavaScript = isInJSFile(baseTypeNode);
@@ -9009,6 +9015,7 @@ namespace ts {
                     const sig = typeParamCount ? createSignatureInstantiation(baseSig, fillMissingTypeArguments(typeArguments, baseSig.typeParameters, minTypeArgumentCount, isJavaScript)) : cloneSignature(baseSig);
                     sig.typeParameters = classType.localTypeParameters;
                     sig.resolvedReturnType = classType;
+                    sig.flags = isAbstract ? sig.flags | SignatureFlags.Abstract : sig.flags & ~SignatureFlags.Abstract;
                     result.push(sig);
                 }
             }
@@ -10402,6 +10409,10 @@ namespace ts {
                 const typeParameters = classType ? classType.localTypeParameters : getTypeParametersFromDeclaration(declaration);
                 if (hasRestParameter(declaration) || isInJSFile(declaration) && maybeAddJsSyntheticRestParameter(declaration, parameters)) {
                     flags |= SignatureFlags.HasRestParameter;
+                }
+                if ((isConstructSignatureDeclaration(declaration) || isConstructorTypeNode(declaration)) && hasModifier(declaration, ModifierFlags.Abstract) ||
+                    isConstructorDeclaration(declaration) && hasModifier(declaration.parent, ModifierFlags.Abstract)) {
+                    flags |= SignatureFlags.Abstract;
                 }
                 links.resolvedSignature = createSignature(declaration, typeParameters, thisParameter, parameters,
                     /*resolvedReturnType*/ undefined, /*resolvedTypePredicate*/ undefined,
@@ -16174,7 +16185,9 @@ namespace ts {
                     SignatureKind.Call : kind);
 
                 if (kind === SignatureKind.Construct && sourceSignatures.length && targetSignatures.length) {
-                    if (isAbstractConstructorType(source) && !isAbstractConstructorType(target)) {
+                    const sourceIsAbstract = !!(sourceSignatures[0].flags & SignatureFlags.Abstract);
+                    const targetIsAbstract = !!(targetSignatures[0].flags & SignatureFlags.Abstract);
+                    if (sourceIsAbstract && !targetIsAbstract) {
                         // An abstract constructor type is not assignable to a non-abstract constructor type
                         // as it would otherwise be possible to new an abstract class. Note that the assignability
                         // check we perform for an extends clause excludes construct signatures from the target,
@@ -25067,8 +25080,7 @@ namespace ts {
                 // Note, only class declarations can be declared abstract.
                 // In the case of a merged class-module or class-interface declaration,
                 // only the class declaration node will have the Abstract flag set.
-                const valueDecl = expressionType.symbol && getClassLikeDeclarationOfSymbol(expressionType.symbol);
-                if (valueDecl && hasModifier(valueDecl, ModifierFlags.Abstract)) {
+                if (constructSignatures[0].flags & SignatureFlags.Abstract) {
                     error(node, Diagnostics.Cannot_create_an_instance_of_an_abstract_class);
                     return resolveErrorCall(node);
                 }
@@ -28687,6 +28699,33 @@ namespace ts {
             }
         }
 
+        function checkConstructSignatureDeclaration(node: ConstructSignatureDeclaration) {
+            checkSignatureDeclaration(node);
+            if (produceDiagnostics) {
+                const symbol = getSymbolOfNode(node);
+                const firstDeclaration = getDeclarationOfKind(symbol, node.kind);
+                if (node === firstDeclaration) {
+                    const flagsToCheck: ModifierFlags = ModifierFlags.Abstract;
+                    let hasOverloads = false;
+                    let someNodeFlags = ModifierFlags.None;
+                    let allNodeFlags = flagsToCheck;
+                    for (const declaration of symbol.declarations) {
+                        if (isConstructSignatureDeclaration(declaration)) {
+                            const currentNodeFlags = getEffectiveDeclarationFlags(declaration, flagsToCheck);
+                            someNodeFlags |= currentNodeFlags;
+                            allNodeFlags &= currentNodeFlags;
+                            if (declaration !== node) {
+                                hasOverloads = true;
+                            }
+                        }
+                    }
+                    if (hasOverloads) {
+                        checkFlagAgreementBetweenOverloads(symbol.declarations, /*implementation*/ undefined, flagsToCheck, someNodeFlags, allNodeFlags);
+                    }
+                }
+            }
+        }
+
         function checkAccessorDeclaration(node: AccessorDeclaration) {
             if (produceDiagnostics) {
                 // Grammar checking accessors
@@ -28966,44 +29005,43 @@ namespace ts {
             return flags & flagsToCheck;
         }
 
+        function getCanonicalOverload(overloads: Declaration[], implementation: FunctionLikeDeclaration | undefined): Declaration {
+            // Consider the canonical set of flags to be the flags of the bodyDeclaration or the first declaration
+            // Error on all deviations from this canonical set of flags
+            // The caveat is that if some overloads are defined in lib.d.ts, we don't want to
+            // report the errors on those. To achieve this, we will say that the implementation is
+            // the canonical signature only if it is in the same container as the first overload
+            const implementationSharesContainerWithFirstOverload = implementation !== undefined && implementation.parent === overloads[0].parent;
+            return implementationSharesContainerWithFirstOverload ? implementation! : overloads[0];
+        }
+
+        function checkFlagAgreementBetweenOverloads(overloads: Declaration[], implementation: FunctionLikeDeclaration | undefined, flagsToCheck: ModifierFlags, someOverloadFlags: ModifierFlags, allOverloadFlags: ModifierFlags): void {
+            // Error if some overloads have a flag that is not shared by all overloads. To find the
+            // deviations, we XOR someOverloadFlags with allOverloadFlags
+            const someButNotAllOverloadFlags = someOverloadFlags ^ allOverloadFlags;
+            if (someButNotAllOverloadFlags !== 0) {
+                const canonicalFlags = getEffectiveDeclarationFlags(getCanonicalOverload(overloads, implementation), flagsToCheck);
+                forEach(overloads, o => {
+                    const deviation = getEffectiveDeclarationFlags(o, flagsToCheck) ^ canonicalFlags;
+                    if (deviation & ModifierFlags.Export) {
+                        error(getNameOfDeclaration(o) ?? o, Diagnostics.Overload_signatures_must_all_be_exported_or_non_exported);
+                    }
+                    else if (deviation & ModifierFlags.Ambient) {
+                        error(getNameOfDeclaration(o) ?? o, Diagnostics.Overload_signatures_must_all_be_ambient_or_non_ambient);
+                    }
+                    else if (deviation & (ModifierFlags.Private | ModifierFlags.Protected)) {
+                        error(getNameOfDeclaration(o) ?? o, Diagnostics.Overload_signatures_must_all_be_public_private_or_protected);
+                    }
+                    else if (deviation & ModifierFlags.Abstract) {
+                        error(getNameOfDeclaration(o) ?? o, Diagnostics.Overload_signatures_must_all_be_abstract_or_non_abstract);
+                    }
+                });
+            }
+        }
+
         function checkFunctionOrConstructorSymbol(symbol: Symbol): void {
             if (!produceDiagnostics) {
                 return;
-            }
-
-            function getCanonicalOverload(overloads: Declaration[], implementation: FunctionLikeDeclaration | undefined): Declaration {
-                // Consider the canonical set of flags to be the flags of the bodyDeclaration or the first declaration
-                // Error on all deviations from this canonical set of flags
-                // The caveat is that if some overloads are defined in lib.d.ts, we don't want to
-                // report the errors on those. To achieve this, we will say that the implementation is
-                // the canonical signature only if it is in the same container as the first overload
-                const implementationSharesContainerWithFirstOverload = implementation !== undefined && implementation.parent === overloads[0].parent;
-                return implementationSharesContainerWithFirstOverload ? implementation! : overloads[0];
-            }
-
-            function checkFlagAgreementBetweenOverloads(overloads: Declaration[], implementation: FunctionLikeDeclaration | undefined, flagsToCheck: ModifierFlags, someOverloadFlags: ModifierFlags, allOverloadFlags: ModifierFlags): void {
-                // Error if some overloads have a flag that is not shared by all overloads. To find the
-                // deviations, we XOR someOverloadFlags with allOverloadFlags
-                const someButNotAllOverloadFlags = someOverloadFlags ^ allOverloadFlags;
-                if (someButNotAllOverloadFlags !== 0) {
-                    const canonicalFlags = getEffectiveDeclarationFlags(getCanonicalOverload(overloads, implementation), flagsToCheck);
-
-                    forEach(overloads, o => {
-                        const deviation = getEffectiveDeclarationFlags(o, flagsToCheck) ^ canonicalFlags;
-                        if (deviation & ModifierFlags.Export) {
-                            error(getNameOfDeclaration(o), Diagnostics.Overload_signatures_must_all_be_exported_or_non_exported);
-                        }
-                        else if (deviation & ModifierFlags.Ambient) {
-                            error(getNameOfDeclaration(o), Diagnostics.Overload_signatures_must_all_be_ambient_or_non_ambient);
-                        }
-                        else if (deviation & (ModifierFlags.Private | ModifierFlags.Protected)) {
-                            error(getNameOfDeclaration(o) || o, Diagnostics.Overload_signatures_must_all_be_public_private_or_protected);
-                        }
-                        else if (deviation & ModifierFlags.Abstract) {
-                            error(getNameOfDeclaration(o), Diagnostics.Overload_signatures_must_all_be_abstract_or_non_abstract);
-                        }
-                    });
-                }
             }
 
             function checkQuestionTokenAgreementBetweenOverloads(overloads: Declaration[], implementation: FunctionLikeDeclaration | undefined, someHaveQuestionToken: boolean, allHaveQuestionToken: boolean): void {
@@ -33331,10 +33369,11 @@ namespace ts {
                     return checkPropertyDeclaration(<PropertyDeclaration>node);
                 case SyntaxKind.PropertySignature:
                     return checkPropertySignature(<PropertySignature>node);
-                case SyntaxKind.FunctionType:
-                case SyntaxKind.ConstructorType:
-                case SyntaxKind.CallSignature:
                 case SyntaxKind.ConstructSignature:
+                    return checkConstructSignatureDeclaration(<ConstructSignatureDeclaration>node);
+                case SyntaxKind.ConstructorType:
+                case SyntaxKind.FunctionType:
+                case SyntaxKind.CallSignature:
                 case SyntaxKind.IndexSignature:
                     return checkSignatureDeclaration(<SignatureDeclaration>node);
                 case SyntaxKind.MethodDeclaration:
@@ -35469,7 +35508,9 @@ namespace ts {
                         if (flags & ModifierFlags.Abstract) {
                             return grammarErrorOnNode(modifier, Diagnostics._0_modifier_already_seen, "abstract");
                         }
-                        if (node.kind !== SyntaxKind.ClassDeclaration) {
+                        if (node.kind !== SyntaxKind.ClassDeclaration &&
+                            node.kind !== SyntaxKind.ConstructorType &&
+                            node.kind !== SyntaxKind.ConstructSignature) {
                             if (node.kind !== SyntaxKind.MethodDeclaration &&
                                 node.kind !== SyntaxKind.PropertyDeclaration &&
                                 node.kind !== SyntaxKind.GetAccessor &&
@@ -35580,6 +35621,8 @@ namespace ts {
                         case SyntaxKind.FunctionDeclaration:
                             return nodeHasAnyModifiersExcept(node, SyntaxKind.AsyncKeyword);
                         case SyntaxKind.ClassDeclaration:
+                        case SyntaxKind.ConstructorType:
+                        case SyntaxKind.ConstructSignature:
                             return nodeHasAnyModifiersExcept(node, SyntaxKind.AbstractKeyword);
                         case SyntaxKind.InterfaceDeclaration:
                         case SyntaxKind.VariableStatement:
@@ -35589,7 +35632,6 @@ namespace ts {
                             return nodeHasAnyModifiersExcept(node, SyntaxKind.ConstKeyword);
                         default:
                             Debug.fail();
-                            return false;
                     }
             }
         }

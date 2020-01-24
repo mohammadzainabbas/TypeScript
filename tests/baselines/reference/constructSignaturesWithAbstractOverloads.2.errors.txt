@@ -1,0 +1,65 @@
+tests/cases/conformance/types/objectTypeLiteral/constructSignatures/constructSignaturesWithAbstractOverloads.2.ts(9,5): error TS2512: Overload signatures must all be abstract or non-abstract.
+tests/cases/conformance/types/objectTypeLiteral/constructSignatures/constructSignaturesWithAbstractOverloads.2.ts(13,10): error TS2511: Cannot create an instance of an abstract class.
+tests/cases/conformance/types/objectTypeLiteral/constructSignatures/constructSignaturesWithAbstractOverloads.2.ts(17,5): error TS2512: Overload signatures must all be abstract or non-abstract.
+tests/cases/conformance/types/objectTypeLiteral/constructSignatures/constructSignaturesWithAbstractOverloads.2.ts(19,5): error TS2512: Overload signatures must all be abstract or non-abstract.
+tests/cases/conformance/types/objectTypeLiteral/constructSignatures/constructSignaturesWithAbstractOverloads.2.ts(24,10): error TS2511: Cannot create an instance of an abstract class.
+tests/cases/conformance/types/objectTypeLiteral/constructSignatures/constructSignaturesWithAbstractOverloads.2.ts(28,5): error TS2512: Overload signatures must all be abstract or non-abstract.
+tests/cases/conformance/types/objectTypeLiteral/constructSignatures/constructSignaturesWithAbstractOverloads.2.ts(31,10): error TS2511: Cannot create an instance of an abstract class.
+tests/cases/conformance/types/objectTypeLiteral/constructSignatures/constructSignaturesWithAbstractOverloads.2.ts(35,5): error TS2512: Overload signatures must all be abstract or non-abstract.
+
+
+==== tests/cases/conformance/types/objectTypeLiteral/constructSignatures/constructSignaturesWithAbstractOverloads.2.ts (8 errors) ====
+    interface C {
+    }
+    
+    interface C2<T> {
+    }
+    
+    interface I {
+        abstract new(x: number, y?: string): C;
+        new(x: number, y: string): C;
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+!!! error TS2512: Overload signatures must all be abstract or non-abstract.
+    }
+    
+    var i: I;
+    var r3 = new i(1, '');
+             ~~~~~~~~~~~~
+!!! error TS2511: Cannot create an instance of an abstract class.
+    
+    interface I2<T> {
+        abstract new (x: T, y?: string): C2<T>;
+        new (x: T, y: string): C2<T>;
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+!!! error TS2512: Overload signatures must all be abstract or non-abstract.
+        abstract new <T>(x: T, y?: string): C2<T>;
+        new <T>(x: T, y: string): C2<T>;
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+!!! error TS2512: Overload signatures must all be abstract or non-abstract.
+    
+    }
+    
+    var i2: I2<number>;
+    var r4 = new i2(1, '');
+             ~~~~~~~~~~~~~
+!!! error TS2511: Cannot create an instance of an abstract class.
+    
+    var a: {
+        abstract new(x: number, y?: string): C;
+        new(x: number, y: string): C;
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+!!! error TS2512: Overload signatures must all be abstract or non-abstract.
+    }
+    
+    var r5 = new a(1, '');
+             ~~~~~~~~~~~~
+!!! error TS2511: Cannot create an instance of an abstract class.
+    
+    var b: {
+        new<T>(x: T, y?: string): C2<T>;
+        abstract new<T>(x: T, y: string): C2<T>;
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+!!! error TS2512: Overload signatures must all be abstract or non-abstract.
+    }
+    
+    var r6 = new b(1, '');

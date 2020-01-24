@@ -102,7 +102,7 @@ export declare const Mixed: {
     };
 } & typeof Unmixed;
 declare const FilteredThing_base: {
-    new (...args: any[]): {
+    abstract new (...args: any[]): {
         match(path: string): boolean;
         thing: number;
     };
